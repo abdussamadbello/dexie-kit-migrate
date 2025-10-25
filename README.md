@@ -289,15 +289,206 @@ npm test
 npm run type-check
 ```
 
+## Advanced Features
+
+### Schema Snapshot and Validation
+
+Create and validate schema snapshots to detect drift:
+
+```bash
+# Create a snapshot of current schema
+npx dexie-migrate snapshot
+
+# Check for schema drift
+npx dexie-migrate check
+```
+
+**Programmatic API:**
+```typescript
+import { createSnapshot, validateSchema, computeExpectedSchema } from 'dexie-migrate';
+
+// Create snapshot from database
+const snapshot = await createSnapshot(db, migrations);
+
+// Validate current schema against expected
+const expected = computeExpectedSchema(migrations);
+const result = validateSchema(snapshot, expected);
+
+if (!result.valid) {
+  console.error('Schema errors:', result.errors);
+}
+```
+
+### Migration Squashing
+
+Combine multiple migrations into a single base migration:
+
+```bash
+# Squash migrations up to ID 20
+npx dexie-migrate squash --cutoff 20
+
+# Preview without making changes
+npx dexie-migrate squash --cutoff 20 --dry-run
+```
+
+**Programmatic API:**
+```typescript
+import { squashMigrations, renumberMigrations } from 'dexie-migrate';
+
+const result = squashMigrations(migrations, { cutoffId: 20 });
+
+// result.baseMigration - the new combined migration
+// result.remainingMigrations - migrations after cutoff
+// result.squashedIds - IDs that were squashed
+```
+
+### Multi-Tab Coordination
+
+Ensure safe migrations across multiple browser tabs:
+
+```typescript
+import { runWithCoordination, MigrationCoordinator } from 'dexie-migrate';
+
+// Simple coordination wrapper
+const result = await runWithCoordination(
+  'my-db',
+  async () => runMigrations('my-db', migrations),
+  { lockTimeout: 30000, verbose: true }
+);
+
+// Or use coordinator directly for more control
+const coordinator = new MigrationCoordinator('my-db', { verbose: true });
+
+coordinator.on('migration_started', (msg) => {
+  console.log('Another tab started migration');
+});
+
+const locked = await coordinator.waitForLock();
+if (locked) {
+  // Run migrations
+  coordinator.notifyMigrationStarted();
+  // ... 
+  coordinator.notifyMigrationCompleted();
+}
+
+coordinator.destroy();
+```
+
+### Vite Plugin
+
+Auto-import migrations in Vite projects:
+
+```typescript
+// vite.config.ts
+import { defineConfig } from 'vite';
+import dexieMigrate from 'dexie-migrate/vite-plugin';
+
+export default defineConfig({
+  plugins: [
+    dexieMigrate({
+      migrationsDir: 'src/db/migrations',
+      validateSchema: true,
+      snapshotPath: '.dexie-migrate/snapshot.json'
+    })
+  ]
+});
+```
+
+Then import migrations using a virtual module:
+
+```typescript
+import migrations from 'virtual:dexie-migrate/migrations';
+import { runMigrations } from 'dexie-migrate';
+
+const { db } = await runMigrations('my-db', migrations);
+```
+
+### Webpack Plugin
+
+Auto-import migrations in Webpack projects:
+
+```javascript
+// webpack.config.js
+const DexieMigratePlugin = require('dexie-migrate/webpack-plugin');
+
+module.exports = {
+  plugins: [
+    new DexieMigratePlugin({
+      migrationsDir: 'src/db/migrations',
+      validateSchema: true
+    })
+  ]
+};
+```
+
+### Progress UI Components
+
+Display migration progress to users:
+
+**Vanilla JavaScript:**
+```typescript
+import { showMigrationProgress } from 'dexie-migrate/progress-ui';
+
+const ui = showMigrationProgress('migration-container', {
+  title: 'Upgrading Database',
+  theme: 'dark'
+});
+
+await runMigrations('my-db', migrations, {
+  onProgress: (current, total) => {
+    ui.update({ current, total, status: 'running' });
+  }
+});
+
+ui.complete();
+```
+
+**React:**
+```tsx
+import { useMigrationProgress, MigrationProgress } from 'dexie-migrate/react';
+
+function App() {
+  const { progress, db } = useMigrationProgress({
+    dbName: 'my-db',
+    migrations: [m0001, m0002],
+    autoStart: true
+  });
+
+  if (!db) {
+    return <MigrationProgress progress={progress} />;
+  }
+
+  return <div>App ready!</div>;
+}
+```
+
+**Vue 3:**
+```vue
+<script setup>
+import { MigrationProgress, useMigrationProgress } from 'dexie-migrate/vue';
+
+const { progress, db } = useMigrationProgress({
+  dbName: 'my-db',
+  migrations: [m0001, m0002],
+  autoStart: true
+});
+</script>
+
+<template>
+  <MigrationProgress v-if="!db" :progress="progress" />
+  <div v-else>App ready!</div>
+</template>
+```
+
 ## Roadmap
 
 - [x] Core runtime (`runMigrations`)
 - [x] CLI (`new` command)
-- [ ] Schema snapshot and validation
-- [ ] Migration squashing
-- [ ] Multi-tab coordination enhancements
-- [ ] Vite/Webpack plugins
-- [ ] Progress UI components
+- [x] Schema snapshot and validation
+- [x] Migration squashing
+- [x] Multi-tab coordination enhancements
+- [x] Vite/Webpack plugins
+- [x] Progress UI components
 
 ## License
 
