@@ -462,10 +462,30 @@ Each migration should do one thing:
 
 ### 4. Use Snapshots in CI/CD
 
+Add schema validation to your CI/CD pipeline:
+
 ```yaml
 # .github/workflows/ci.yml
-- name: Check schema drift
-  run: npx dexie-migrate check
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Check schema drift
+        run: npx dexie-migrate check
 ```
 
 ### 5. Squash Old Migrations
@@ -643,16 +663,40 @@ If `check` command reports drift:
 
 ### Type Errors with TypeScript
 
-Ensure you have proper types:
-```bash
-npm install --save-dev @types/node
-```
+If you encounter TypeScript errors, ensure you have the necessary type definitions installed.
 
-And in tsconfig.json:
+**Check package.json devDependencies:**
 ```json
 {
-  "compilerOptions": {
-    "types": ["dexie"]
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.0"
   }
 }
 ```
+
+**Update tsconfig.json if needed:**
+```json
+{
+  "compilerOptions": {
+    "types": ["dexie", "node"],
+    "lib": ["ES2020", "DOM"],
+    "moduleResolution": "node",
+    "esModuleInterop": true
+  }
+}
+```
+
+Note: If you're only using dexie-migrate in a browser environment, you may only need the `dexie` types. Add `node` types if you're using Node.js features or running tests in Node.
+
+### Other Issues
+
+For other issues not covered here:
+1. Check the [GitHub Issues](https://github.com/abdussamadbello/dexie-migrate/issues)
+2. Review the [API Reference](#api-reference)
+3. Check browser console for detailed error messages
+4. Enable verbose logging: `runMigrations(db, migrations, { verbose: true })`
+
+---
+
+**End of Documentation** - For more examples, see the `examples/` directory in the repository.
