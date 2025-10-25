@@ -1,6 +1,6 @@
 {
   "name": "@dexie-kit/migrate",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "SQL-style migrations for Dexie: numbered files, snapshot, squashing, resumable upgrades, multi-tab safe",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
