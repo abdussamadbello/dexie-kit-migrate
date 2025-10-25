@@ -5,12 +5,11 @@ import type { Migration } from '../types';
 
 describe('runMigrations', () => {
   beforeEach(async () => {
-    // Clean up any existing test databases
-    const databases = await indexedDB.databases();
-    for (const db of databases) {
-      if (db.name) {
-        await Dexie.delete(db.name);
-      }
+    // Clean up test database
+    try {
+      await Dexie.delete('test-db');
+    } catch {
+      // Ignore errors if database doesn't exist
     }
   });
 
@@ -75,7 +74,16 @@ describe('runMigrations', () => {
 
     // Apply first time
     const result1 = await runMigrations('test-db', migrations);
+    
+    // Check that migration was recorded
+    const records = await result1.db._dexie_migrations.toArray();
+    expect(records).toHaveLength(1);
+    expect(records[0].id).toBe(1);
+    
     await result1.db.close();
+
+    // Wait a bit to ensure everything is flushed
+    await new Promise(resolve => setTimeout(resolve, 50));
 
     // Apply again - should skip
     const result2 = await runMigrations('test-db', migrations);

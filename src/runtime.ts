@@ -52,7 +52,7 @@ export async function runMigrations(
 
   // Create the actual database with migrations
   const db = new Dexie(dbName);
-  const appliedMigrationIds: number[] = [];
+  const newlyApplied: number[] = [];
 
   // Build version chain
   for (let i = 0; i < sortedMigrations.length; i++) {
@@ -62,10 +62,6 @@ export async function runMigrations(
 
     if (verbose && isNewMigration) {
       console.log(`[dexie-migrate] Applying migration ${migration.id}: ${migration.name}`);
-    }
-
-    if (isNewMigration) {
-      onProgress?.(appliedMigrationIds.length + 1, pendingMigrations.length);
     }
 
     // Define the version with schema changes
@@ -78,39 +74,44 @@ export async function runMigrations(
 
     // Add upgrade function only for new migrations
     if (isNewMigration) {
+      const migrationToApply = migration; // Capture in closure
+      const progressIndex = newlyApplied.length + 1;
+      
       versionBuilder.upgrade(async (tx) => {
         try {
+          onProgress?.(progressIndex, pendingMigrations.length);
+          
           // Run the up migration
-          if (migration.up) {
-            await migration.up(tx);
+          if (migrationToApply.up) {
+            await migrationToApply.up(tx);
           }
 
           // Run validation if defined
-          if (migration.validateAfter) {
-            const isValid = await migration.validateAfter(tx);
+          if (migrationToApply.validateAfter) {
+            const isValid = await migrationToApply.validateAfter(tx);
             if (!isValid) {
-              throw new Error(`Migration ${migration.id} validation failed`);
+              throw new Error(`Migration ${migrationToApply.id} validation failed`);
             }
           }
 
           // Record that this migration was applied
           await tx.table(MIGRATIONS_TABLE).add({
-            id: migration.id,
-            name: migration.name,
+            id: migrationToApply.id,
+            name: migrationToApply.name,
             appliedAt: Date.now()
           });
 
           if (verbose) {
-            console.log(`[dexie-migrate] ✓ Migration ${migration.id} completed`);
+            console.log(`[dexie-migrate] ✓ Migration ${migrationToApply.id} completed`);
           }
-
-          appliedMigrationIds.push(migration.id);
         } catch (error) {
-          console.error(`[dexie-migrate] ✗ Migration ${migration.id} failed:`, error);
-          onError?.(migration, error as Error);
+          console.error(`[dexie-migrate] ✗ Migration ${migrationToApply.id} failed:`, error);
+          onError?.(migrationToApply, error as Error);
           throw error;
         }
       });
+      
+      newlyApplied.push(migration.id);
     }
   }
 
@@ -126,7 +127,7 @@ export async function runMigrations(
 
     return {
       db,
-      appliedMigrations: appliedMigrationIds,
+      appliedMigrations: newlyApplied,
       skippedMigrations: skippedMigrations.map(m => m.id),
       finalVersion: sortedMigrations.length
     };
@@ -143,12 +144,16 @@ async function getAppliedMigrations(dbName: string): Promise<Set<number>> {
   const tempDb = new Dexie(dbName);
   
   try {
-    // Try to open the database to check if it exists
-    tempDb.version(1).stores({
-      [MIGRATIONS_TABLE]: 'id, name, appliedAt'
-    });
-
+    // Open without specifying version - Dexie will use existing version
     await tempDb.open();
+    
+    // Check if migrations table exists
+    const hasMigrationsTable = tempDb.tables.some(t => t.name === MIGRATIONS_TABLE);
+    
+    if (!hasMigrationsTable) {
+      await tempDb.close();
+      return new Set();
+    }
     
     // Get applied migrations
     const appliedRecords = await tempDb.table<MigrationRecord>(MIGRATIONS_TABLE).toArray();
@@ -158,11 +163,11 @@ async function getAppliedMigrations(dbName: string): Promise<Set<number>> {
     
     return appliedIds;
   } catch (error) {
-    // Database doesn't exist or table doesn't exist
+    // Database doesn't exist or can't be opened
     try {
       await tempDb.close();
     } catch {
-      // Ignore close errors
+      // Ignore
     }
     return new Set();
   }
