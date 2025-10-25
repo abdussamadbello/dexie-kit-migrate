@@ -1,10 +1,10 @@
-# dexie-migrate
+# @dexie-kit/migrate
 
 **SQL-style migrations for Dexie: numbered files, snapshot, squashing, resumable upgrades, multi-tab safe.**
 
 Give Dexie apps a linear, testable, deterministic migration story—like SQL migrations—without fighting IndexedDB's constraints.
 
-[![npm version](https://img.shields.io/npm/v/dexie-migrate.svg)](https://www.npmjs.com/package/dexie-migrate)
+[![npm version](https://img.shields.io/npm/v/@dexie-kit/migrate.svg)](https://www.npmjs.com/package/@dexie-kit/migrate)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## Features
@@ -22,7 +22,7 @@ Give Dexie apps a linear, testable, deterministic migration story—like SQL mig
 ### Installation
 
 ```bash
-npm install dexie dexie-migrate
+npm install dexie @dexie-kit/migrate
 ```
 
 ### 1. Create your first migration
@@ -37,7 +37,7 @@ This creates a migration file like `migrations/0001_20251025143000_initial_schem
 
 ```typescript
 // migrations/0001_20251025143000_initial_schema.ts
-import type { Migration } from 'dexie-migrate';
+import type { Migration } from '@dexie-kit/migrate';
 
 export default {
   id: 1,
@@ -54,7 +54,7 @@ export default {
 
 ```typescript
 // db/index.ts
-import { runMigrations } from 'dexie-migrate';
+import { runMigrations } from '@dexie-kit/migrate';
 import m0001 from './migrations/0001_20251025143000_initial_schema';
 
 const MIGRATIONS = [m0001];
@@ -84,7 +84,7 @@ npx dexie-migrate new "add user avatar field"
 **Migration with data transformation:**
 ```typescript
 // migrations/0002_20251025150000_add_updated_at.ts
-import type { Migration } from 'dexie-migrate';
+import type { Migration } from '@dexie-kit/migrate';
 
 export default {
   id: 2,
@@ -107,7 +107,7 @@ export default {
 
 **Basic usage:**
 ```typescript
-import { runMigrations } from 'dexie-migrate';
+import { runMigrations } from '@dexie-kit/migrate';
 import m0001 from './migrations/0001_initial_schema';
 import m0002 from './migrations/0002_add_updated_at';
 
@@ -305,7 +305,7 @@ npx dexie-migrate check
 
 **Programmatic API:**
 ```typescript
-import { createSnapshot, validateSchema, computeExpectedSchema } from 'dexie-migrate';
+import { createSnapshot, validateSchema, computeExpectedSchema } from '@dexie-kit/migrate';
 
 // Create snapshot from database
 const snapshot = await createSnapshot(db, migrations);
@@ -333,7 +333,7 @@ npx dexie-migrate squash --cutoff 20 --dry-run
 
 **Programmatic API:**
 ```typescript
-import { squashMigrations, renumberMigrations } from 'dexie-migrate';
+import { squashMigrations, renumberMigrations } from '@dexie-kit/migrate';
 
 const result = squashMigrations(migrations, { cutoffId: 20 });
 
@@ -347,7 +347,7 @@ const result = squashMigrations(migrations, { cutoffId: 20 });
 Ensure safe migrations across multiple browser tabs:
 
 ```typescript
-import { runWithCoordination, MigrationCoordinator } from 'dexie-migrate';
+import { runWithCoordination, MigrationCoordinator } from '@dexie-kit/migrate';
 
 // Simple coordination wrapper
 const result = await runWithCoordination(
@@ -381,7 +381,7 @@ Auto-import migrations in Vite projects:
 ```typescript
 // vite.config.ts
 import { defineConfig } from 'vite';
-import dexieMigrate from 'dexie-migrate/vite-plugin';
+import dexieMigrate from '@dexie-kit/migrate/vite-plugin';
 
 export default defineConfig({
   plugins: [
@@ -398,7 +398,7 @@ Then import migrations using a virtual module:
 
 ```typescript
 import migrations from 'virtual:dexie-migrate/migrations';
-import { runMigrations } from 'dexie-migrate';
+import { runMigrations } from '@dexie-kit/migrate';
 
 const { db } = await runMigrations('my-db', migrations);
 ```
@@ -409,7 +409,7 @@ Auto-import migrations in Webpack projects:
 
 ```javascript
 // webpack.config.js
-const DexieMigratePlugin = require('dexie-migrate/webpack-plugin');
+const DexieMigratePlugin = require('@dexie-kit/migrate/webpack-plugin');
 
 module.exports = {
   plugins: [
@@ -427,7 +427,7 @@ Display migration progress to users:
 
 **Vanilla JavaScript:**
 ```typescript
-import { showMigrationProgress } from 'dexie-migrate/progress-ui';
+import { showMigrationProgress } from '@dexie-kit/migrate/progress-ui';
 
 const ui = showMigrationProgress('migration-container', {
   title: 'Upgrading Database',
@@ -445,7 +445,7 @@ ui.complete();
 
 **React:**
 ```tsx
-import { useMigrationProgress, MigrationProgress } from 'dexie-migrate/react';
+import { useMigrationProgress, MigrationProgress } from '@dexie-kit/migrate/react';
 
 function App() {
   const { progress, db } = useMigrationProgress({
@@ -465,7 +465,7 @@ function App() {
 **Vue 3:**
 ```vue
 <script setup>
-import { MigrationProgress, useMigrationProgress } from 'dexie-migrate/vue';
+import { MigrationProgress, useMigrationProgress } from '@dexie-kit/migrate/vue';
 
 const { progress, db } = useMigrationProgress({
   dbName: 'my-db',
