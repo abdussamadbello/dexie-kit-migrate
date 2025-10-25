@@ -1,0 +1,1979 @@
+# Product Requirements Document: dexie-migrate
+
+**Version:** 0.1 DRAFT  
+**Last Updated:** October 25, 2025  
+**Status:** Planning
+
+---
+
+## Executive Summary
+
+**Product:** dexie-migrate  
+**Tagline:** SQL-style migrations for Dexie: numbered files, snapshot, squashing, resumable upgrades, multi-tab safe.
+
+**One-liner:** Give Dexie apps a linear, testable, deterministic migration story—like SQL migrations—without fighting IndexedDB's constraints.
+
+**Requirements:** 
+- Dexie.js (works with Dexie 3.x and 4.x)
+- Modern JavaScript environment (browser or bundler with ES modules support)
+- No framework or bundler dependencies
+
+**Works with:**
+- **Bundlers:** Vite, Webpack, Rollup, esbuild, Parcel, or no bundler (plain ES modules)
+- **Frameworks:** Vanilla JS/TS, React, Vue, Svelte, Solid, Lit, Angular, or any framework
+- **Environments:** Browser (Chrome, Firefox, Safari, Edge), Capacitor, Electron
+
+---
+
+## Quick Start
+
+```bash
+# 1. Install
+npm install dexie dexie-migrate
+
+# 2. Create your first migration
+npx dexie-migrate new "initial schema"
+
+# 3. Edit the generated file
+# db/migrations/0001_..._initial_schema.ts
+
+# 4. Initialize DB in your app
+# db/index.ts
+import { runMigrations } from 'dexie-migrate';
+import m0001 from './migrations/0001_..._initial_schema';
+import m0002 from './migrations/0002_..._add_fields';
+
+const MIGRATIONS = [m0001, m0002];
+
+export const db = await runMigrations('my-app', MIGRATIONS);
+
+# 5. Use it anywhere!
+# main.ts (or any file)
+import { db } from './db';
+const forms = await db.forms.toArray();
+console.log('Forms:', forms);
+```
+
+**📖 Works with:** Any bundler (Vite, Webpack, Rollup, esbuild, Parcel) or no bundler (plain ES modules)  
+**🎨 Framework:** Vanilla JS, React, Vue, Svelte, Solid, Lit, or any framework
+
+---
+
+## 1. Problem Statement & Context
+
+### Current Pain Points
+
+**For developers:**
+- Dexie migrations are imperative (`.version(N).stores(...)`) → no version control history
+- No way to squash old migrations after years of development
+- Schema drift between code and database is invisible until runtime failure
+- Merge conflicts when multiple devs add versions simultaneously
+- Teams lose track of what changed when and why
+
+**For production apps:**
+- Multi-tab upgrades cause silent failures and data corruption
+- No resumability if migration fails halfway through
+- Users on old versions have no clear upgrade path through N intermediate versions
+- Large data migrations block app startup with no progress feedback
+
+**Why now:**
+- Growing Dexie apps hitting 20+ versions → chains become unmanageable
+- PWA offline-first apps need production-grade schema management
+- SQL developers expect migration files, not programmatic version chains
+- IndexedDB adoption growing but tooling lags behind server-side ORMs
+
+### Success Criteria
+
+**MVP success:** 10 production apps adopt dexie-migrate within 6 months  
+**Quality bar:** Zero data loss reports, <5 bugs per 1000 installs  
+**DX target:** Setup time <10 minutes, "easy to use" in 80% of feedback
+
+---
+
+## 2. Goals & Non-Goals
+
+### Goals (What we're solving)
+
+✅ **Numbered, append-only migration files** (like Rails/Django/Alembic)  
+✅ **Deterministic schema evolution** across teams and deployments  
+✅ **Safe multi-tab upgrades** with proper coordination  
+✅ **Squashing for long-running apps** (compress 50 migrations → 1)  
+✅ **Better DX than vanilla Dexie** (less boilerplate, clearer intent)  
+✅ **Git-friendly** (one file per change, easy to review)  
+✅ **Resumable migrations** (atomic steps, retry on failure)
+
+### Non-Goals (What we're explicitly NOT doing)
+
+❌ **Automatic downgrades** (IndexedDB doesn't support rollback)  
+❌ **Zero-downtime migrations** (single-user apps by nature)  
+❌ **Cross-browser sync/conflict resolution** (that's application logic)  
+❌ **Schema inference from TypeScript types** (too magical, leave to v2+)  
+❌ **Migration generation from DB diffs** (explicit > implicit)  
+❌ **Encrypted migrations** (use Dexie's existing encryption hooks)
+
+---
+
+## 3. User Personas
+
+### Persona 1: "Solo Dev with Growing App"
+
+**Profile:**
+- Building a note-taking PWA, now at version 15
+- Losing track of what changed and when
+- Struggles to onboard new contributors
+
+**Needs:**
+- Git-friendly migration history
+- Easy to add new migrations
+- Documentation of schema evolution
+
+**Pain:** "I can't remember why I added this index 8 months ago"
+
+---
+
+### Persona 2: "Team Shipping Production PWA"
+
+**Profile:**
+- 5 developers working on offline-first SaaS app
+- Merge conflicts in Dexie version chains
+- Need code review for schema changes
+
+**Needs:**
+- Isolated migration files (no conflicts)
+- Snapshot validation in CI
+- Clear schema at any point in time
+
+**Pain:** "Two of us added version 12 in separate branches"
+
+---
+
+### Persona 3: "Mature App with Legacy Users"
+
+**Profile:**
+- App launched 2 years ago, users still on v3-v15
+- Need to support upgrade path through 20+ versions
+- Large datasets (100K+ rows per user)
+
+**Needs:**
+- Resumable migrations (can't lose user data)
+- Progress indicators for long migrations
+- Ability to squash old migrations
+
+**Pain:** "User reported corrupted DB after upgrading from v5 to v18"
+
+---
+
+## 4. User Stories & Acceptance Criteria
+
+### Story 1: Create First Migration
+
+```
+AS A developer starting a new Dexie project
+I WANT to run `dexie-migrate new "initial schema"`
+SO THAT I get a numbered migration file without manual setup
+```
+
+**Acceptance Criteria:**
+- ✅ CLI generates `0001_initial_schema.ts` with boilerplate
+- ✅ File includes TypeScript types for Migration interface
+- ✅ Inline comments explain stores/up/down sections
+- ✅ README generated with next steps
+- ✅ Works without additional config files
+
+---
+
+### Story 2: Add Field to Production App
+
+```
+AS A developer with users in production
+I WANT to add a new field without breaking existing data
+SO THAT users seamlessly upgrade on next app launch
+```
+
+**Acceptance Criteria:**
+- ✅ Create `0005_add_updatedAt.ts` via CLI
+- ✅ Migration runs automatically on app open
+- ✅ Existing records get default values via `up()` function
+- ✅ New records include the field
+- ✅ No data loss or corruption
+- ✅ Multi-tab safe (other tabs close gracefully)
+
+---
+
+### Story 3: Multi-Tab Safety
+
+```
+AS A user with my app open in 3 browser tabs
+WHEN a schema migration is triggered
+THEN 2 tabs should close gracefully and 1 should complete the upgrade
+```
+
+**Acceptance Criteria:**
+- ✅ Non-upgrading tabs show modal: "Closing for upgrade..."
+- ✅ One tab becomes "leader" and performs migration
+- ✅ No data corruption during concurrent access
+- ✅ After upgrade, user can reopen closed tabs
+- ✅ All tabs converge to new schema version
+
+---
+
+### Story 4: Large Dataset Migration
+
+```
+AS A user with 500K records in IndexedDB
+WHEN a data transformation migration runs
+THEN I should see progress and not think the app froze
+```
+
+**Acceptance Criteria:**
+- ✅ UI shows "Upgrading database: 2/5 migrations"
+- ✅ Progress bar for current migration (if >10s estimated)
+- ✅ App remains responsive (no frozen UI)
+- ✅ Can cancel and retry later (resumable)
+- ✅ Error messages are actionable
+
+---
+
+### Story 5: Squash Old Migrations
+
+```
+AS A maintainer of a 2-year-old app
+I WANT to squash migrations 0001-0020 into a single base migration
+SO THAT new users don't replay 2 years of history
+```
+
+**Acceptance Criteria:**
+- ✅ `dexie-migrate squash --cutoff 20` generates `0001_base.ts`
+- ✅ Old migrations archived but kept for existing users
+- ✅ New installs run only squashed version
+- ✅ Snapshot validates correctness
+- ✅ Docs explain cutoff strategy
+
+---
+
+### Story 6: Detect Schema Drift
+
+```
+AS A developer
+WHEN my code schema doesn't match the snapshot
+THEN I want a clear error before deploying to production
+```
+
+**Acceptance Criteria:**
+- ✅ `dexie-migrate check` compares code vs snapshot
+- ✅ Shows visual diff of tables/indexes
+- ✅ Fails CI build if drift detected
+- ✅ Suggests running `snapshot` to update
+- ✅ Works in pre-commit hooks
+
+---
+
+## 5. Technical Requirements
+
+### Must Have (MVP - Week 1-4)
+
+**Runtime:**
+- [ ] Execute numbered migrations sequentially
+- [ ] Track applied migrations in `_migrations` table (separate from verno)
+- [ ] Handle multi-tab via `blocked`/`versionchange` events
+- [ ] Atomic per-migration (fail before bumping version)
+- [ ] Resume from last successful migration on retry
+
+**CLI:**
+- [ ] `dexie-migrate new <name>` - generate migration file
+- [ ] `dexie-migrate check` - validate schema vs snapshot
+- [ ] Timestamp-based IDs to prevent collisions (0001_20250125_name.ts)
+
+**Types:**
+- [ ] TypeScript definitions for Migration interface
+- [ ] Typed Transaction and StoresMap
+- [ ] Exported helpers (Dexie, Table types)
+
+**Cross-Browser:**
+- [ ] Chrome/Edge (Blink)
+- [ ] Firefox (Gecko)
+- [ ] Safari/iOS (WebKit) - critical for PWAs
+
+**Bundler Compatibility:**
+- [ ] Works with manual imports (any bundler)
+- [ ] Vite integration (import.meta.glob)
+- [ ] Webpack integration (require.context)
+- [ ] No bundler (plain ES modules in browser)
+- [ ] TypeScript support
+- [ ] Proper tree-shaking / code-splitting support
+
+---
+
+### Should Have (v0.2 - Week 5-8)
+
+**Advanced Runtime:**
+- [ ] `dexie-migrate snapshot` - capture current schema
+- [ ] `dexie-migrate squash --cutoff N` - generate base migration
+- [ ] Dry-run mode (preview without applying)
+- [ ] Progress events (onStart, onStep, onComplete)
+- [ ] Validation hooks (validateAfter per migration)
+
+**Bundler Plugins (optional):**
+- [ ] Vite plugin (auto-validation in dev mode, watch mode)
+- [ ] Webpack plugin
+- [ ] Rollup plugin
+
+**DX Improvements:**
+- [ ] Better error messages with recovery steps
+- [ ] Migration generator with prompts (interactive CLI)
+- [ ] `dexie-migrate print-schema` - pretty table view
+- [ ] Conflict detection at build time
+
+---
+
+### Nice to Have (v1.0 - Future)
+
+**Performance:**
+- [ ] Background migration mode (non-blocking backfills)
+- [ ] Batch mode (apply multiple migrations in one connection)
+- [ ] Size warnings (>100K rows = suggest background mode)
+
+**Advanced Patterns:**
+- [ ] Shadow table helper (for breaking changes)
+- [ ] Lazy migration (upgrade on read/write)
+- [ ] Common pattern presets (addColumn, renameTable)
+
+**Observability:**
+- [ ] Telemetry hooks (onError, duration tracking)
+- [ ] UI progress components (framework-agnostic + framework-specific examples)
+- [ ] Integration examples (Sentry, Mixpanel)
+
+**TypeScript:**
+- [ ] Schema inference from snapshot.json
+- [ ] Auto-generate types for table access
+- [ ] Zod integration for runtime validation
+
+---
+
+## 6. API Design (Detailed)
+
+### 6.1 Migration File Format
+
+**File naming convention:**
+```
+migrations/
+  0001_20250125143000_init.ts
+  0002_20250126091500_add_updatedAt.ts
+  0003_20250127160000_split_responses.ts
+```
+
+**Format:** `<sequential>_<timestamp>_<description>.ts`
+- Sequential: 0001, 0002, ... (for ordering)
+- Timestamp: YYYYMMDDHHmmss (collision detection)
+- Description: snake_case, descriptive
+
+**Migration interface:**
+```typescript
+import { type Dexie, type Transaction } from 'dexie';
+import type { StoresMap } from 'dexie-migrate';
+
+export default {
+  id: 2,                    // Must match filename prefix
+  name: 'add_updatedAt',    // Must match filename suffix
+  
+  // Optional: schema changes for this step
+  stores: <StoresMap>{
+    forms: 'id, name, updatedAt',
+    responses: 'id, formId, createdAt, updatedAt, [formId+createdAt]'
+  },
+  
+  // Optional: data transformation (runs in versionchange transaction)
+  async up(tx: Transaction) {
+    await tx.table('forms').toCollection().modify((obj: any) => {
+      obj.updatedAt ??= Date.now();
+    });
+  },
+  
+  // Optional: test-only reversal (never runs in production)
+  async down(tx: Transaction) {
+    await tx.table('forms').toCollection().modify((obj: any) => {
+      delete obj.updatedAt;
+    });
+  },
+  
+  // Optional: validation after migration
+  async validateAfter(tx: Transaction): Promise<boolean> {
+    const count = await tx.table('forms').count();
+    const withUpdatedAt = await tx.table('forms')
+      .where('updatedAt').above(0).count();
+    return count === withUpdatedAt; // all rows have updatedAt
+  },
+  
+  // Optional: timeout (default 30s)
+  timeout: 60_000, // 1 minute for large migrations
+  
+} as const;
+```
+
+**Rules:**
+- `stores` is optional (pure data migrations don't need it)
+- `up()` must be local-only (no network calls)
+- `down()` only for tests, never in production
+- Migrations are immutable once merged
+
+---
+
+### 6.2 Runtime API
+
+**Primary function (universal pattern):**
+```typescript
+import { runMigrations, type Migration } from 'dexie-migrate';
+import m0001 from './migrations/0001_20250125_init';
+import m0002 from './migrations/0002_20250126_add_updatedAt';
+import m0003 from './migrations/0003_20250127_add_indexes';
+
+// Explicit migration list (works with any bundler)
+const MIGRATIONS = [m0001, m0002, m0003];
+
+// Run migrations and get ready-to-use DB
+const db = await runMigrations('my-app-db', MIGRATIONS, {
+  // Optional config
+  dryRun: false,               // Preview without applying
+  verbose: true,               // Log each step
+  onProgress: (step, total) => console.log(`${step}/${total}`),
+  onError: (migration, error) => Sentry.captureException(error),
+});
+
+// db is now a Dexie instance at latest version
+await db.forms.toArray();
+```
+
+**Auto-import patterns (bundler-specific):**
+
+<details>
+<summary><strong>Vite (import.meta.glob)</strong></summary>
+
+```typescript
+// Vite's import.meta.glob for auto-importing migrations
+const migrationModules = import.meta.glob<{ default: Migration }>(
+  './migrations/*.ts', 
+  { eager: true }
+);
+
+const MIGRATIONS = Object.values(migrationModules)
+  .map(m => m.default)
+  .sort((a, b) => a.id - b.id);
+
+const db = await runMigrations('my-app-db', MIGRATIONS);
+```
+</details>
+
+<details>
+<summary><strong>Webpack (require.context)</strong></summary>
+
+```typescript
+// Webpack's require.context for auto-importing
+const migrationContext = require.context('./migrations', false, /\.ts$/);
+
+const MIGRATIONS = migrationContext
+  .keys()
+  .map(key => migrationContext(key).default)
+  .sort((a, b) => a.id - b.id);
+
+const db = await runMigrations('my-app-db', MIGRATIONS);
+```
+</details>
+
+**Alternative: Lazy loading (better for prod, any bundler):**
+```typescript
+// Load migrations on-demand to reduce initial bundle size
+// Works with dynamic import() - supported by all modern bundlers
+const migrations = [
+  () => import('./migrations/0001_init').then(m => m.default),
+  () => import('./migrations/0002_add_fields').then(m => m.default),
+];
+
+const MIGRATIONS = await Promise.all(migrations.map(fn => fn()));
+const db = await runMigrations('my-app-db', MIGRATIONS);
+```
+
+**Return value:**
+```typescript
+interface MigrationResult {
+  db: Dexie;                    // Ready-to-use database
+  appliedMigrations: number[];  // [1, 2, 3, ...] IDs that ran
+  skippedMigrations: number[];  // Already applied
+  finalVersion: number;         // Current db.verno
+}
+```
+
+**Multi-tab coordination:**
+```typescript
+import { runMigrations, setupMultiTab } from 'dexie-migrate';
+
+// Optional: leader election
+setupMultiTab('my-app-db', {
+  onBlocked: () => {
+    showModal('Please close other tabs to upgrade database');
+  },
+  onFollowerClose: () => {
+    showToast('Closing for upgrade. Refresh when ready.');
+    setTimeout(() => window.location.reload(), 1000);
+  }
+});
+
+const db = await runMigrations('my-app-db', MIGRATIONS);
+```
+
+---
+
+### 6.3 CLI Commands
+
+**Installation:**
+```bash
+npm install -D dexie-migrate
+# or
+pnpm add -D dexie-migrate
+```
+
+**Commands:**
+
+```bash
+# Create new migration (interactive)
+dexie-migrate new
+# Creates: 0005_20250125143000_<name>.ts
+
+# Create new migration (with name)
+dexie-migrate new "add user avatar field"
+# Creates: 0005_20250125143000_add_user_avatar_field.ts
+
+# Check schema drift
+dexie-migrate check
+# ✓ Schema matches snapshot
+# or
+# ⚠ Drift detected:
+#   forms: missing index 'updatedAt'
+#   Run: dexie-migrate snapshot
+
+# Check with auto-fix
+dexie-migrate check --fix
+# Auto-generates snapshot if drift detected
+
+# Create snapshot
+dexie-migrate snapshot
+# Writes: schema.snapshot.json
+
+# Squash migrations
+dexie-migrate squash --cutoff 20
+# Generates: 0001_base.ts (combines 0001-0020)
+# Archives: migrations/archived/
+
+# Print current schema
+dexie-migrate print-schema
+# Pretty table:
+# Table: forms
+#   Primary: id
+#   Indexes: name, updatedAt
+#   Compound: [formId+createdAt]
+
+# Dry-run migration
+dexie-migrate run --dry-run
+# Shows what would happen without applying
+```
+
+**Config file (optional):**
+```typescript
+// dexie-migrate.config.ts
+export default {
+  dbName: 'my-app-db',
+  migrationsDir: './src/db/migrations',
+  snapshotPath: './src/db/schema.snapshot.json',
+  verbose: true,
+};
+```
+
+---
+
+### 6.4 Bundler Configuration Examples
+
+**Universal (no bundler needed):**
+```typescript
+// Just import migrations directly - works everywhere
+import { runMigrations } from 'dexie-migrate';
+import m0001 from './migrations/0001_init';
+import m0002 from './migrations/0002_add_fields';
+
+const MIGRATIONS = [m0001, m0002];
+export const db = await runMigrations('my-app-db', MIGRATIONS);
+```
+
+**Vite (with optional plugin):**
+```typescript
+// vite.config.ts
+import { defineConfig } from 'vite';
+import { dexieMigrate } from 'dexie-migrate/vite'; // Optional plugin
+
+export default defineConfig({
+  plugins: [
+    dexieMigrate({  // Optional: auto-validation
+      validateInDev: true,
+      migrationsDir: './src/db/migrations',
+    })
+  ],
+  optimizeDeps: {
+    exclude: ['dexie'] // Prevent pre-bundling issues
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'migrations': [/\/migrations\/.*/] // Code-split migrations
+        }
+      }
+    }
+  }
+});
+```
+
+**Webpack:**
+```javascript
+// webpack.config.js
+module.exports = {
+  // ... other config
+  optimization: {
+    splitChunks: {
+      cacheGroups: {
+        migrations: {
+          test: /[\\/]migrations[\\/]/,
+          name: 'migrations',
+          chunks: 'all'
+        }
+      }
+    }
+  }
+};
+```
+
+**Environment-based configuration (any bundler):**
+```typescript
+// db/index.ts
+const config = {
+  dbName: process.env.DB_NAME || 'my-app-db',
+  verbose: process.env.NODE_ENV === 'development',
+  validateSchema: process.env.NODE_ENV === 'development',
+};
+
+export const db = await runMigrations(config.dbName, MIGRATIONS, config);
+```
+
+---
+
+### 6.5 Snapshot Format
+
+**schema.snapshot.json:**
+```json
+{
+  "version": 1,
+  "lastMigration": 12,
+  "createdAt": "2025-01-25T14:30:00Z",
+  "tables": {
+    "forms": {
+      "primaryKey": "id",
+      "indexes": ["name", "updatedAt"],
+      "autoIncrement": true
+    },
+    "responses": {
+      "primaryKey": "id",
+      "indexes": ["formId", "createdAt", "updatedAt"],
+      "compound": ["[formId+createdAt]"]
+    }
+  },
+  "meta": {
+    "totalMigrations": 12,
+    "squashedAt": null
+  }
+}
+```
+
+---
+
+## 7. Open Questions to Resolve
+
+### Q1: Migration ID Strategy
+
+**Options:**
+1. **Sequential only:** `0001, 0002, 0003`
+   - ✅ Simple, deterministic ordering
+   - ❌ Merge conflicts on teams
+
+2. **Timestamp-based:** `20250125143000`
+   - ✅ No collisions
+   - ❌ Harder to read, no clear sequence
+
+3. **Hybrid (RECOMMENDED):** `0001_20250125143000_description`
+   - ✅ Sequential for ordering, timestamp for collision detection
+   - ✅ Description for readability
+   - ❌ Longer filenames
+
+**Decision:** Use hybrid approach. CLI validates timestamp uniqueness.
+
+---
+
+### Q2: Schema Validation
+
+**When to validate?**
+1. Every app open (paranoid mode)
+2. Only in development
+3. Only on explicit `check` command
+
+**Decision:** 
+- Development: validate on every open (with caching)
+- Production: only validate if `VALIDATE_SCHEMA=true` env var
+- CI: always validate
+
+---
+
+### Q3: Failed Migration Recovery
+
+**Options:**
+1. **Auto-retry:** Immediately retry on next open
+   - ✅ No user intervention
+   - ❌ Might fail repeatedly
+
+2. **Manual intervention:** Require user action
+   - ✅ Prevents corruption
+   - ❌ Poor UX
+
+3. **Rollback:** Undo partial changes
+   - ✅ Clean state
+   - ❌ IndexedDB doesn't support this
+
+**Decision:**
+- Migrations are atomic (fail before version bump)
+- Auto-retry once, then show error with recovery instructions
+- Provide `clearDatabase()` escape hatch
+
+---
+
+### Q4: Large Dataset Migrations
+
+**Threshold:** What's "large"?
+- 10K rows = ~1s migration = no UI needed
+- 100K rows = ~10s = show progress
+- 1M rows = ~60s = background mode + resumable
+
+**Decision:**
+- Estimate row count in `up()` function
+- If >100K rows, emit progress events every 10K
+- If >500K rows, suggest background mode in docs
+
+---
+
+### Q5: Backward Compatibility
+
+**Can existing Dexie apps migrate?**
+
+**Migration path:**
+1. Install dexie-migrate
+2. Run `dexie-migrate init` to scan existing code
+3. Generates migrations for each `.version()` call
+4. Creates snapshot
+5. Switch to dexie-migrate runtime
+
+**Decision:** Provide migration guide but don't auto-convert (too risky)
+
+---
+
+## 8. Migration Patterns Cookbook
+
+### Pattern 1: Add Column (Additive)
+
+**Scenario:** Add `updatedAt` timestamp to existing table
+
+```typescript
+// 0005_add_updatedAt.ts
+export default {
+  id: 5,
+  name: 'add_updatedAt',
+  stores: {
+    forms: 'id, name, createdAt, updatedAt', // add updatedAt
+  },
+  async up(tx) {
+    const now = Date.now();
+    await tx.table('forms').toCollection().modify(obj => {
+      obj.updatedAt = obj.updatedAt ?? now;
+    });
+  }
+};
+```
+
+---
+
+### Pattern 2: Add Index (Non-Breaking)
+
+**Scenario:** Speed up queries on existing column
+
+```typescript
+// 0006_index_forms_status.ts
+export default {
+  id: 6,
+  name: 'index_forms_status',
+  stores: {
+    forms: 'id, name, createdAt, updatedAt, status', // add status index
+  },
+  // No up() needed - IndexedDB rebuilds index automatically
+};
+```
+
+---
+
+### Pattern 3: Rename Table
+
+**Scenario:** Rename `users` → `accounts`
+
+```typescript
+// 0007_rename_users_to_accounts.ts
+export default {
+  id: 7,
+  name: 'rename_users_to_accounts',
+  stores: {
+    accounts: 'id, email, name', // new table
+    users: null,                 // mark old for deletion
+  },
+  async up(tx) {
+    const oldData = await tx.table('users').toArray();
+    await tx.table('accounts').bulkAdd(oldData);
+    // users table will be deleted by stores: { users: null }
+  }
+};
+```
+
+---
+
+### Pattern 4: Change Primary Key
+
+**Scenario:** Change PK from auto-increment to UUID
+
+```typescript
+// 0008_forms_uuid_pk.ts
+import { v4 as uuid } from 'uuid';
+
+export default {
+  id: 8,
+  name: 'forms_uuid_pk',
+  stores: {
+    forms_v2: 'uuid, name, createdAt', // new table with string PK
+    forms: null,                        // mark old for deletion
+  },
+  async up(tx) {
+    const old = await tx.table('forms').toArray();
+    const withUUIDs = old.map(obj => ({ ...obj, uuid: uuid() }));
+    await tx.table('forms_v2').bulkAdd(withUUIDs);
+  }
+};
+
+// Next migration: rename forms_v2 → forms
+```
+
+---
+
+### Pattern 5: Data Transformation
+
+**Scenario:** Split `fullName` into `firstName` + `lastName`
+
+```typescript
+// 0009_split_fullname.ts
+export default {
+  id: 9,
+  name: 'split_fullname',
+  stores: {
+    users: 'id, email, firstName, lastName', // add new fields
+  },
+  async up(tx) {
+    await tx.table('users').toCollection().modify(user => {
+      if (user.fullName) {
+        const parts = user.fullName.split(' ');
+        user.firstName = parts[0] || '';
+        user.lastName = parts.slice(1).join(' ') || '';
+        delete user.fullName;
+      }
+    });
+  }
+};
+```
+
+---
+
+### Pattern 6: Shadow Table (Breaking Change)
+
+**Scenario:** Major restructure that needs gradual rollout
+
+```typescript
+// 0010_responses_v2.ts
+export default {
+  id: 10,
+  name: 'responses_v2',
+  stores: {
+    responses_v2: 'id, formId, data, metadata', // new structure
+    responses: 'id, formId, ...',                // keep old
+  },
+  async up(tx) {
+    // Copy to new table with transformation
+    const old = await tx.table('responses').toArray();
+    const transformed = old.map(r => ({
+      id: r.id,
+      formId: r.formId,
+      data: { /* flatten fields */ },
+      metadata: { createdAt: r.createdAt }
+    }));
+    await tx.table('responses_v2').bulkAdd(transformed);
+    // Don't delete old table yet (app still uses it)
+  }
+};
+
+// Later migration deletes responses, renames responses_v2 → responses
+```
+
+---
+
+### Pattern 7: Nuke & Resync
+
+**Scenario:** Sync-backed app with catastrophic schema change
+
+```typescript
+// 0011_nuke_and_resync.ts
+export default {
+  id: 11,
+  name: 'nuke_and_resync',
+  stores: {
+    forms: null,
+    responses: null,
+    syncStatus: 'key, lastSync', // keep sync state
+  },
+  async up(tx) {
+    // Clear everything except sync metadata
+    await tx.table('syncStatus').put({ 
+      key: 'needsFullResync', 
+      lastSync: Date.now() 
+    });
+    // App logic will re-fetch from server
+  }
+};
+```
+
+---
+
+## 9. Bundler Integration Guide
+
+> **⚠️ IMPORTANT:** dexie-migrate works with **any bundler or no bundler**. This section shows Vite examples because it's popular, but the same principles apply to Webpack, Rollup, esbuild, Parcel, or plain ES modules. The only difference is how you import migrations—see "Migration Loading Patterns" below.
+
+**Note:** All examples work with vanilla JavaScript/TypeScript and any framework. The core database setup is bundler and framework-agnostic.
+
+### Migration Loading Patterns by Bundler
+
+**Manual imports (works everywhere):**
+```typescript
+import m0001 from './migrations/0001_init';
+import m0002 from './migrations/0002_add_fields';
+const MIGRATIONS = [m0001, m0002];
+```
+
+**Vite:**  `import.meta.glob('./migrations/*.ts', { eager: true })`  
+**Webpack:**  `require.context('./migrations', false, /\.ts$/)`  
+**No bundler:**  Manual imports with plain ES modules  
+**Others (Rollup/esbuild/Parcel):**  Manual imports
+
+### Vite Example (Recommended File Structure)
+
+```
+my-app/                           # Works with any bundler
+├── src/
+│   ├── db/
+│   │   ├── index.ts              # Main DB export
+│   │   ├── migrations/
+│   │   │   ├── 0001_20250125_init.ts
+│   │   │   ├── 0002_20250126_add_updatedAt.ts
+│   │   │   └── 0003_20250127_add_indexes.ts
+│   │   ├── schema.snapshot.json  # Current schema state
+│   │   └── types.ts              # Generated types (optional)
+│   ├── components/               # Your app components
+│   │   └── ...
+│   ├── main.ts                   # App entry point
+│   └── App.*                     # Root component (any framework)
+├── dexie-migrate.config.ts       # Migration config (optional)
+├── tsconfig.json                 # If using TypeScript
+└── package.json
+```
+
+### Initial Setup (Vite Example)
+
+> **Note:** These steps work for any bundler. Just replace `import.meta.glob` with your bundler's pattern (see above).
+
+**1. Install dependencies:**
+```bash
+npm install dexie dexie-migrate
+npm install -D @types/node  # If using TypeScript
+
+# No bundler or framework-specific packages needed!
+```
+
+**2. Configure your bundler (Vite example):**
+```typescript
+// vite.config.ts
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import { dexieMigrate } from 'dexie-migrate/vite';
+
+export default defineConfig({
+  plugins: [
+    react(),
+    dexieMigrate({
+      validateInDev: true,
+      migrationsDir: './src/db/migrations',
+    })
+  ],
+  optimizeDeps: {
+    exclude: ['dexie'] // Prevent Vite from pre-bundling Dexie
+  }
+});
+```
+
+**3. Create initial migration:**
+```bash
+npx dexie-migrate new "initial schema"
+```
+
+**4. Set up database:**
+```typescript
+// src/db/index.ts
+import { runMigrations, type Migration } from 'dexie-migrate';
+import Dexie from 'dexie';
+
+// Auto-import migrations using Vite's glob
+const migrationModules = import.meta.glob<{ default: Migration }>(
+  './migrations/*.ts',
+  { eager: true }
+);
+
+const MIGRATIONS = Object.values(migrationModules)
+  .map(m => m.default)
+  .sort((a, b) => a.id - b.id);
+
+// Initialize DB
+export const db = await runMigrations('my-app-db', MIGRATIONS, {
+  verbose: import.meta.env.DEV,
+  onProgress: (current, total) => {
+    console.log(`Migration ${current}/${total}`);
+  }
+});
+
+// Export typed tables
+export const { forms, responses } = db;
+
+// Type-safe table access
+export type FormRecord = {
+  id?: number;
+  name: string;
+  createdAt: number;
+  updatedAt: number;
+};
+```
+
+**5. Use in your app:**
+
+<details>
+<summary><strong>Vanilla JavaScript / TypeScript</strong></summary>
+
+```typescript
+// src/main.ts
+import { db } from './db';
+
+async function loadForms() {
+  const forms = await db.forms.toArray();
+  console.log('Loaded forms:', forms);
+  
+  // Render to DOM
+  const container = document.getElementById('app');
+  container.innerHTML = forms.map(f => `
+    <div class="form-item">
+      <h3>${f.name}</h3>
+      <p>Updated: ${new Date(f.updatedAt).toLocaleString()}</p>
+    </div>
+  `).join('');
+}
+
+loadForms();
+
+// Live updates (optional - using Dexie's observable)
+db.forms.hook('creating', () => loadForms());
+db.forms.hook('updating', () => loadForms());
+db.forms.hook('deleting', () => loadForms());
+```
+</details>
+
+<details>
+<summary><strong>React</strong></summary>
+
+```typescript
+// src/App.tsx
+import { useEffect, useState } from 'react';
+import { db } from './db';
+
+function App() {
+  const [forms, setForms] = useState([]);
+
+  useEffect(() => {
+    // Load data
+    db.forms.toArray().then(setForms);
+    
+    // Live query (requires dexie-react-hooks)
+    // const forms = useLiveQuery(() => db.forms.toArray());
+  }, []);
+
+  return (
+    <div>
+      <h1>Forms ({forms.length})</h1>
+      {forms.map(form => (
+        <div key={form.id}>{form.name}</div>
+      ))}
+    </div>
+  );
+}
+```
+</details>
+
+<details>
+<summary><strong>Vue 3</strong></summary>
+
+```vue
+<!-- src/App.vue -->
+<script setup lang="ts">
+import { ref, onMounted } from 'vue';
+import { db } from './db';
+
+const forms = ref([]);
+
+onMounted(async () => {
+  forms.value = await db.forms.toArray();
+  
+  // Live updates
+  db.forms.hook('creating', async () => {
+    forms.value = await db.forms.toArray();
+  });
+});
+</script>
+
+<template>
+  <div>
+    <h1>Forms ({{ forms.length }})</h1>
+    <div v-for="form in forms" :key="form.id">
+      {{ form.name }}
+    </div>
+  </div>
+</template>
+```
+</details>
+
+<details>
+<summary><strong>Svelte</strong></summary>
+
+```svelte
+<!-- src/App.svelte -->
+<script lang="ts">
+  import { onMount } from 'svelte';
+  import { db } from './db';
+  
+  let forms = [];
+
+  onMount(async () => {
+    forms = await db.forms.toArray();
+    
+    // Live updates
+    db.forms.hook('creating', async () => {
+      forms = await db.forms.toArray();
+    });
+  });
+</script>
+
+<main>
+  <h1>Forms ({forms.length})</h1>
+  {#each forms as form (form.id)}
+    <div>{form.name}</div>
+  {/each}
+</main>
+```
+</details>
+
+<details>
+<summary><strong>Solid.js</strong></summary>
+
+```typescript
+// src/App.tsx
+import { createSignal, onMount } from 'solid-js';
+import { db } from './db';
+
+function App() {
+  const [forms, setForms] = createSignal([]);
+
+  onMount(async () => {
+    setForms(await db.forms.toArray());
+    
+    // Live updates
+    db.forms.hook('creating', async () => {
+      setForms(await db.forms.toArray());
+    });
+  });
+
+  return (
+    <div>
+      <h1>Forms ({forms().length})</h1>
+      {forms().map(form => (
+        <div>{form.name}</div>
+      ))}
+    </div>
+  );
+}
+```
+</details>
+
+
+
+### Development Workflow
+
+**Adding a new migration:**
+```bash
+# 1. Generate migration file
+npm run migrate:new "add status field"
+
+# 2. Edit generated file
+# src/db/migrations/0004_20250128_add_status_field.ts
+
+# 3. Run migration (automatic on next dev server start)
+npm run dev
+
+# 4. Verify in browser DevTools
+# Application > IndexedDB > my-app-db
+```
+
+**Showing migration progress (optional):**
+
+<details>
+<summary><strong>Vanilla JavaScript</strong></summary>
+
+```typescript
+// src/db/index.ts
+import { runMigrations } from 'dexie-migrate';
+
+// Show progress in console or custom UI
+const progressEl = document.getElementById('migration-progress');
+
+const db = await runMigrations('my-app', MIGRATIONS, {
+  onProgress: (current, total) => {
+    const percent = Math.round((current / total) * 100);
+    if (progressEl) {
+      progressEl.textContent = `Upgrading database: ${current}/${total} (${percent}%)`;
+    }
+    console.log(`Migration ${current}/${total}`);
+  },
+  onComplete: () => {
+    if (progressEl) {
+      progressEl.textContent = 'Database ready!';
+      setTimeout(() => progressEl.remove(), 2000);
+    }
+  }
+});
+```
+</details>
+
+<details>
+<summary><strong>React</strong></summary>
+
+```typescript
+// src/components/DatabaseProvider.tsx
+import { useState, useEffect } from 'react';
+import { runMigrations } from 'dexie-migrate';
+import { MIGRATIONS } from '../db';
+
+export function DatabaseProvider({ children }) {
+  const [status, setStatus] = useState({ loading: true, progress: null });
+
+  useEffect(() => {
+    runMigrations('my-app', MIGRATIONS, {
+      onProgress: (current, total) => {
+        setStatus({ loading: true, progress: { current, total } });
+      }
+    }).then(() => {
+      setStatus({ loading: false, progress: null });
+    });
+  }, []);
+
+  if (status.loading && status.progress) {
+    return (
+      <div className="migration-overlay">
+        <h2>Upgrading Database</h2>
+        <progress value={status.progress.current} max={status.progress.total} />
+        <p>{status.progress.current} / {status.progress.total}</p>
+      </div>
+    );
+  }
+
+  return <>{children}</>;
+}
+```
+</details>
+
+<details>
+<summary><strong>Vue 3</strong></summary>
+
+```vue
+<!-- src/components/DatabaseProvider.vue -->
+<script setup lang="ts">
+import { ref, onMounted } from 'vue';
+import { runMigrations } from 'dexie-migrate';
+import { MIGRATIONS } from '../db';
+
+const migrating = ref(false);
+const progress = ref({ current: 0, total: 0 });
+
+onMounted(async () => {
+  migrating.value = true;
+  
+  await runMigrations('my-app', MIGRATIONS, {
+    onProgress: (current, total) => {
+      progress.value = { current, total };
+    }
+  });
+  
+  migrating.value = false;
+});
+</script>
+
+<template>
+  <div v-if="migrating" class="migration-overlay">
+    <h2>Upgrading Database</h2>
+    <progress :value="progress.current" :max="progress.total"></progress>
+    <p>{{ progress.current }} / {{ progress.total }}</p>
+  </div>
+  <slot v-else></slot>
+</template>
+```
+</details>
+
+<details>
+<summary><strong>Svelte</strong></summary>
+
+```svelte
+<!-- src/components/DatabaseProvider.svelte -->
+<script lang="ts">
+  import { onMount } from 'svelte';
+  import { runMigrations } from 'dexie-migrate';
+  import { MIGRATIONS } from '../db';
+  
+  let migrating = false;
+  let progress = { current: 0, total: 0 };
+
+  onMount(async () => {
+    migrating = true;
+    
+    await runMigrations('my-app', MIGRATIONS, {
+      onProgress: (current, total) => {
+        progress = { current, total };
+      }
+    });
+    
+    migrating = false;
+  });
+</script>
+
+{#if migrating}
+  <div class="migration-overlay">
+    <h2>Upgrading Database</h2>
+    <progress value={progress.current} max={progress.total}></progress>
+    <p>{progress.current} / {progress.total}</p>
+  </div>
+{:else}
+  <slot></slot>
+{/if}
+```
+</details>
+
+**Validating schema:**
+```bash
+# Check if code matches snapshot
+npm run migrate:check
+
+# Update snapshot after changes
+npm run migrate:snapshot
+```
+
+### Production Build Optimization
+
+**Code splitting for migrations:**
+```typescript
+// Use dynamic imports for large migration files
+const migrationModules = import.meta.glob<{ default: Migration }>(
+  './migrations/*.ts'
+);
+
+// Load only migrations that need to run
+const MIGRATIONS = await Promise.all(
+  Object.entries(migrationModules)
+    .sort(([pathA], [pathB]) => pathA.localeCompare(pathB))
+    .map(async ([path, importFn]) => {
+      const id = parseInt(path.match(/(\d+)_/)?.[1] || '0');
+      if (id > currentVersion) {
+        const module = await importFn();
+        return module.default;
+      }
+      return null;
+    })
+).then(migs => migs.filter(Boolean));
+```
+
+**Bundle size optimization:**
+```typescript
+// vite.config.ts
+export default defineConfig({
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // Separate old migrations from main bundle
+          'migrations-archive': [
+            /migrations\/000[1-9]_/  // Squashed base migrations
+          ],
+          'migrations-recent': [
+            /migrations\/00[1-9][0-9]_/ // Recent migrations
+          ],
+        }
+      }
+    }
+  }
+});
+```
+
+### package.json Scripts
+
+```json
+{
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    
+    "migrate:new": "dexie-migrate new",
+    "migrate:check": "dexie-migrate check",
+    "migrate:snapshot": "dexie-migrate snapshot",
+    "migrate:squash": "dexie-migrate squash",
+    "migrate:print": "dexie-migrate print-schema",
+    
+    "db:reset": "node scripts/reset-db.js",
+    "db:seed": "node scripts/seed-db.js"
+  }
+}
+```
+
+### Environment Variables
+
+```bash
+# .env.development
+VITE_DB_NAME=my-app-db-dev
+VITE_VALIDATE_SCHEMA=true
+VITE_MIGRATION_VERBOSE=true
+
+# .env.production
+VITE_DB_NAME=my-app-db
+VITE_VALIDATE_SCHEMA=false
+VITE_MIGRATION_VERBOSE=false
+```
+
+### Testing with Vitest
+
+```typescript
+// src/db/index.test.ts
+import { describe, it, expect, beforeEach } from 'vitest';
+import Dexie from 'dexie';
+import { runMigrations } from 'dexie-migrate';
+import { MIGRATIONS } from './index';
+
+describe('Database Migrations', () => {
+  beforeEach(async () => {
+    await Dexie.delete('test-db');
+  });
+
+  it('should run all migrations', async () => {
+    const db = await runMigrations('test-db', MIGRATIONS);
+    expect(db.verno).toBe(MIGRATIONS.length);
+  });
+
+  it('should create tables with correct schema', async () => {
+    const db = await runMigrations('test-db', MIGRATIONS);
+    expect(db.tables.map(t => t.name)).toContain('forms');
+    expect(db.tables.map(t => t.name)).toContain('responses');
+  });
+});
+```
+
+---
+
+## 10. Testing Strategy
+
+### Unit Tests (Jest)
+
+**Test cases:**
+```typescript
+describe('runMigrations', () => {
+  it('applies migrations in order', async () => {
+    const m1 = { id: 1, stores: { items: 'id' } };
+    const m2 = { id: 2, stores: { items: 'id, name' } };
+    const db = await runMigrations('test-db', [m1, m2]);
+    expect(db.verno).toBe(2);
+  });
+
+  it('skips already-applied migrations', async () => {
+    // ... create DB at version 1
+    const db = await runMigrations('test-db', [m1, m2]);
+    expect(appliedCount).toBe(1); // only m2
+  });
+
+  it('handles failed migrations atomically', async () => {
+    const m3 = { 
+      id: 3, 
+      up: async () => { throw new Error('fail'); } 
+    };
+    await expect(runMigrations('test-db', [m3])).rejects.toThrow();
+    expect(db.verno).toBe(0); // rolled back
+  });
+});
+```
+
+---
+
+### Integration Tests (Playwright)
+
+**Critical scenarios:**
+```typescript
+test('multi-tab upgrade', async ({ context }) => {
+  const page1 = await context.newPage();
+  const page2 = await context.newPage();
+  
+  // Both pages open DB
+  await page1.goto('/app');
+  await page2.goto('/app');
+  
+  // Trigger migration in page1
+  await page1.click('#trigger-migration');
+  
+  // page2 should close gracefully
+  await expect(page2.locator('#closing-modal')).toBeVisible();
+  
+  // page1 completes migration
+  await expect(page1.locator('#migration-complete')).toBeVisible();
+});
+
+test('resumable migration', async ({ page }) => {
+  // Start migration
+  await page.goto('/app?migrate=true');
+  await page.waitForSelector('#migration-progress');
+  
+  // Simulate crash (close page mid-migration)
+  await page.close();
+  
+  // Reopen - should resume
+  page = await context.newPage();
+  await page.goto('/app');
+  await expect(page.locator('#migration-resumed')).toBeVisible();
+});
+
+test('large dataset migration shows progress', async ({ page }) => {
+  // Seed 100K rows
+  await seedDatabase('test-db', 100_000);
+  
+  await page.goto('/app');
+  await expect(page.locator('#migration-progress')).toBeVisible();
+  await expect(page.locator('#progress-bar')).toHaveAttribute('value', /.+/);
+});
+```
+
+---
+
+### Browser Compatibility Matrix
+
+| Browser | Version | Status |
+|---------|---------|--------|
+| Chrome | 90+ | ✅ Primary |
+| Firefox | 88+ | ✅ Primary |
+| Safari | 14+ | ✅ Critical (iOS PWAs) |
+| Edge | 90+ | ✅ (Chromium) |
+| Safari iOS | 14+ | ✅ Critical |
+| Chrome Android | 90+ | ✅ |
+
+**Test on each platform:**
+- Large migrations (100K rows)
+- Multi-tab coordination
+- Version jumps (v1 → v20 direct)
+
+---
+
+## 11. Success Metrics
+
+### Adoption Metrics (6 months)
+
+- **GitHub Stars:** 100+
+- **npm Downloads:** 500/week
+- **Production Apps:** 10+ using in prod
+- **Contributors:** 5+ external contributors
+
+### Quality Metrics
+
+- **Data Loss Reports:** 0 (critical)
+- **Bugs per Install:** <5 per 1000
+- **Migration Success Rate:** >99.5%
+- **Average Setup Time:** <10 minutes
+
+### Developer Experience
+
+- **Documentation Rating:** 4.5/5 stars
+- **"Easy to Use" Sentiment:** 80%+ positive
+- **Time to First Migration:** <5 minutes
+- **Support Ticket Volume:** <10/month
+
+### Performance Benchmarks
+
+- **Small Migration (<1K rows):** <100ms
+- **Medium Migration (10K rows):** <1s
+- **Large Migration (100K rows):** <10s
+- **Squash Operation:** <5s
+
+---
+
+## 12. Phased Rollout
+
+### Phase 1: MVP Prototype (Week 1-2)
+
+**Deliverables:**
+- Core runtime (`runMigrations`)
+- Basic CLI (`new`, `check`)
+- TypeScript types
+- Example app with 3 migrations
+- Unit tests for runtime
+
+**Success Criteria:**
+- Can create and run migrations
+- Multi-tab handling works
+- No data loss in tests
+
+---
+
+### Phase 2: Polish & Documentation (Week 3-4)
+
+**Deliverables:**
+- Safari/iOS testing
+- Migration patterns guide (7+ examples)
+- API documentation
+- Troubleshooting guide
+- Contributing guidelines
+
+**Success Criteria:**
+- Works on all major browsers
+- Setup guide <10min
+- 3 external testers complete onboarding
+
+---
+
+### Phase 3: Advanced Features (Week 5-6)
+
+**Deliverables:**
+- `snapshot` command
+- `squash` command
+- Dry-run mode
+- Progress events
+- Framework integration examples (vanilla JS, React, Vue, Svelte)
+
+**Success Criteria:**
+- Can squash 20 migrations
+- Progress UI renders correctly
+- Snapshot validation catches drift
+
+---
+
+### Phase 4: Beta Release (Week 7-8)
+
+**Deliverables:**
+- npm publish (`dexie-migrate@0.1.0-beta`)
+- Blog post announcement
+- 3 pilot apps using in production
+- Bug triage and fixes
+
+**Success Criteria:**
+- 0 critical bugs from pilots
+- Positive feedback from pilots
+- <10 GitHub issues
+
+---
+
+### Phase 5: v0.1 Launch (Week 9-10)
+
+**Deliverables:**
+- npm publish (`dexie-migrate@0.1.0`)
+- Launch blog post
+- HackerNews post
+- Reddit r/webdev post
+- Tweet thread
+
+**Success Criteria:**
+- 50+ stars in first week
+- 100+ npm downloads
+- 5+ positive testimonials
+
+---
+
+## 13. Risk Assessment
+
+### High Risk
+
+**🔴 Data Loss During Migration**
+- Mitigation: Atomic migrations, extensive testing, validation hooks
+- Fallback: User can clear DB and resync
+
+**🔴 Browser Incompatibility**
+- Mitigation: Test matrix on all major browsers, polyfills
+- Fallback: Graceful degradation message
+
+**🔴 Multi-Tab Race Conditions**
+- Mitigation: Leader election, BroadcastChannel coordination
+- Fallback: Block concurrent upgrades, force single-tab mode
+
+### Medium Risk
+
+**🟡 Poor DX (Hard to Use)**
+- Mitigation: Interactive CLI, clear docs, examples
+- Fallback: Gather feedback, iterate on API
+
+**🟡 Performance Issues on Large Datasets**
+- Mitigation: Progress events, background mode, benchmarks
+- Fallback: Document limitations, guide users
+
+**🟡 Low Adoption**
+- Mitigation: Marketing, examples, HN launch
+- Fallback: Direct outreach to Dexie users
+
+### Low Risk
+
+**🟢 Feature Bloat**
+- Mitigation: Stick to MVP, defer nice-to-haves
+- Fallback: Remove unused features in v0.2
+
+**🟢 Maintenance Burden**
+- Mitigation: Clean code, tests, docs
+- Fallback: Seek co-maintainers
+
+---
+
+## 14. Future Roadmap (Post v1.0)
+
+### v1.1: Enhanced TypeScript
+
+- Schema inference from snapshot
+- Auto-generated table types
+- Zod integration for validation
+
+### v1.2: Performance
+
+- Background migration mode
+- Lazy migration (on-demand)
+- Parallelized data transforms
+
+### v1.3: Observability
+
+- Built-in telemetry
+- Error reporting integration
+- Performance monitoring
+
+### v2.0: Advanced Patterns
+
+- Encrypted migrations
+- Multi-database coordination
+- Real-time collaborative migrations
+- Schema versioning (Git-style branches)
+
+---
+
+## 15. What Should We Focus On Next?
+
+### Option 1: Drill Into API Design
+
+**Deep dive into exact function signatures:**
+- Finalize `Migration` interface (all optional fields?)
+- Decide on `runMigrations` return value
+- Nail down CLI flags and options
+- Define progress event shape
+- Error handling API
+
+**Why now:** Changing APIs post-launch is painful. Get it right up front.
+
+**Time estimate:** 2-3 hours of discussion + prototyping
+
+---
+
+### Option 2: Flesh Out User Stories
+
+**Cover more edge cases:**
+- User on very old version (v3 → v20 jump)
+- Migration fails halfway through large dataset
+- Multiple developers add migrations simultaneously
+- User manually edits IDB via DevTools
+- Network failure during migration (if fetching remote data)
+- Browser crashes mid-migration
+
+**Why now:** Edge cases are where bugs hide. Map them early.
+
+**Time estimate:** 2-4 hours
+
+---
+
+### Option 3: Technical Architecture
+
+**How the runtime actually works internally:**
+- State machine for migration process
+- Leader election algorithm
+- Transaction isolation strategy
+- Progress estimation logic
+- Error recovery flow
+- Caching strategy for snapshot validation
+
+**Why now:** Architecture decisions affect everything downstream.
+
+**Time estimate:** 4-6 hours (includes diagrams)
+
+---
+
+### Option 4: Migration Patterns Cookbook
+
+**Document common recipes in detail:**
+- 15+ real-world migration scenarios
+- Before/after code examples
+- Performance considerations
+- Testing strategies per pattern
+- Anti-patterns (what NOT to do)
+
+**Why now:** This is the #1 thing users will reference. Nail it early.
+
+**Time estimate:** 3-5 hours
+
+---
+
+### Option 5: Testing Strategy
+
+**What needs testing and how:**
+- Unit test plan (Jest)
+- Integration test plan (Playwright)
+- Browser compatibility matrix
+- Performance benchmarks
+- Chaos testing (random failures)
+- CI/CD pipeline design
+
+**Why now:** Testing strategy informs implementation. Do it before coding.
+
+**Time estimate:** 3-4 hours
+
+---
+
+## 16. Bundler & Environment FAQs
+
+**Q: Does dexie-migrate require a specific bundler?**
+A: No! It works with any bundler (Vite, Webpack, Rollup, esbuild, Parcel) or no bundler at all (plain ES modules). Only the migration import pattern varies—the core library is universal.
+
+**Q: Which bundlers support auto-importing migrations?**
+A: Vite (`import.meta.glob`) and Webpack (`require.context`) have built-in patterns. For others, use manual imports or dynamic `import()` statements.
+
+**Q: Can I use this without a build step?**
+A: Yes! Use plain ES modules with manual imports:
+```html
+<script type="module">
+  import { runMigrations } from 'https://cdn.jsdelivr.net/npm/dexie-migrate/dist/index.mjs';
+  import m0001 from './db/migrations/0001.js';
+  const db = await runMigrations('my-app', [m0001]);
+</script>
+```
+
+**Q: Should I commit schema.snapshot.json to git?**
+A: Yes! It's the source of truth for your schema and should be versioned.
+
+**Q: How do I handle migrations in production builds?**
+A: Use code-splitting to keep migrations out of your main bundle. All modern bundlers support dynamic imports for this.
+
+**Q: Can I use this with SSR (Next.js, Nuxt, SvelteKit)?**
+A: IndexedDB only works in the browser. Wrap DB initialization in `if (typeof window !== 'undefined')` or use client-only components/modules.
+
+**Q: Does this work with Vite SSR mode?**
+A: Yes, but ensure DB initialization only happens client-side. Most frameworks have patterns for this (e.g., `onMount` in Svelte, `useEffect` in React).
+
+**Q: How do I debug migrations in development?**
+A: Enable verbose logging:
+```typescript
+const db = await runMigrations('my-app', MIGRATIONS, { verbose: true });
+```
+Then check the browser console and Application > IndexedDB in DevTools.
+
+**Q: Can I use this with monorepos (pnpm workspaces, Nx, Turborepo)?**
+A: Yes! dexie-migrate is just a regular npm package. Install it in the workspace that needs it.
+
+**Q: Does this work with Electron or Capacitor?**
+A: Yes! Both use Chromium's IndexedDB implementation, so dexie-migrate works perfectly.
+
+---
+
+## Appendix A: Related Work
+
+**Similar tools in other ecosystems:**
+- **Rails:** ActiveRecord migrations (numbered files, up/down, rake tasks)
+- **Django:** Migration files, dependency graph, squashing
+- **Alembic:** Python SQL migrations, revision history
+- **Flyway:** Java DB versioning, repeatable scripts
+- **TypeORM:** TypeScript ORM with migrations
+
+**Dexie-specific prior art:**
+- `dexie-observable` - Change tracking
+- `dexie-export-import` - Backup/restore
+- Various abandoned migration wrappers
+
+**What makes dexie-migrate different:**
+- Built for IndexedDB constraints
+- Multi-tab aware
+- Squashing support
+- Better DX than vanilla Dexie
+
+---
+
+## Appendix B: Glossary
+
+- **Migration:** A numbered file describing a schema/data change
+- **Squashing:** Combining multiple migrations into one
+- **Shadow Table:** Temporary table for breaking changes
+- **verno:** Dexie's internal version number
+- **versionchange:** IndexedDB event when schema changes
+- **blocked:** IndexedDB event when upgrade is prevented
+- **Leader election:** Process to choose one tab for upgrades
+- **Atomic migration:** All-or-nothing (no partial application)
+
+---
+
+## Appendix C: FAQs
+
+**Q: Why not use Dexie's built-in `.version()` chains?**
+A: They work but aren't git-friendly, can't be squashed, and merge conflict easily.
+
+**Q: Can I downgrade my database?**
+A: No - IndexedDB doesn't support rollback. Only forward migrations.
+
+**Q: What if a migration fails?**
+A: It fails atomically before bumping version. Next open retries the same step.
+
+**Q: How do I handle huge datasets?**
+A: Use progress events + background mode. Or transform data lazily on read.
+
+**Q: Can I rename migrations after merging?**
+A: No - migrations are immutable once merged to main branch.
+
+**Q: What about encrypted databases?**
+A: Use Dexie's encryption middleware. Migrations run on unencrypted data.
+
+---
+
+**End of PRD**
